@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phaser Utah Teapot - Pro Software</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Courier New', monospace;
+        }
+        
+        #main-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 40px;
+        }
+
+        #game-container {
+            border: 1px solid #0f0;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+            position: relative;
+        }
+        
+        #status {
+            position: absolute;
+            color: #0f0;
+            font-size: 18px;
+            pointer-events: none;
+            text-align: center;
+            top: 20px;
+            z-index: 100;
+            width: 100%;
+        }
+
+        #controls-sidebar {
+            color: #0f0;
+            text-align: left;
+            width: 220px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #0f0;
+            padding-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #0f0;
+            margin-top: 20px;
+        }
+        .section-title:first-child { margin-top: 0; }
+
+        .control-option {
+            cursor: pointer;
+            padding: 6px 10px;
+            margin: 2px 0;
+            border: 1px solid transparent;
+            opacity: 0.6;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+            color: #0f0;
+        }
+
+        .control-option:hover {
+            opacity: 1;
+            text-shadow: 0 0 5px #0f0;
+        }
+
+        .control-option.active {
+            opacity: 1;
+            border: 1px solid #0f0;
+            background-color: rgba(0, 255, 0, 0.1);
+            font-weight: bold;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.2);
+        }
+
+        .bullet {
+            width: 6px;
+            height: 6px;
+            border: 1px solid #0f0;
+            margin-right: 10px;
+            display: inline-block;
+        }
+
+        .active .bullet {
+            background-color: #0f0;
+            box-shadow: 0 0 5px #0f0;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Loading Teapot...</div>
+    
+    <div id="main-wrapper">
+        <div id="game-container"></div>
+
+        <div id="controls-sidebar">
+            <div class="section-title">Software Rendering</div>
+            <div class="control-option" data-mode="points">
+                <span class="bullet"></span> Points
+            </div>
+            <div class="control-option" data-mode="wireframe">
+                <span class="bullet"></span> Wireframe
+            </div>
+            <div class="control-option" data-mode="hidden-line">
+                <span class="bullet"></span> Hidden Line
+            </div>
+            <div class="control-option active" data-mode="flat">
+                <span class="bullet"></span> Flat Shaded
+            </div>
+            <div class="control-option" data-mode="gouraud">
+                <span class="bullet"></span> Gouraud
+            </div>
+            <div class="control-option" data-mode="phong">
+                <span class="bullet"></span> Phong
+            </div>
+
+            <div class="section-title">Retro FX</div>
+            <div class="control-option" data-fx="bloom">
+                <span class="bullet"></span> Bloom
+            </div>
+            <div class="control-option" data-fx="scanlines">
+                <span class="bullet"></span> Scanlines
+            </div>
+        </div>
+    </div>
+    
+    <script src="node_modules/phaser/dist/phaser.min.js"></script>
+    <script src="teapot_data.js"></script>
+    <script>
+        const statusEl = document.getElementById('status');
+        let currentRenderMode = 'flat';
+        let activeFX = { bloom: false, scanlines: false };
+
+        document.querySelectorAll('[data-mode]').forEach(opt => {
+            opt.addEventListener('click', () => {
+                document.querySelectorAll('[data-mode]').forEach(o => o.classList.remove('active'));
+                opt.classList.add('active');
+                currentRenderMode = opt.getAttribute('data-mode');
+            });
+        });
+
+        document.querySelectorAll('[data-fx]').forEach(opt => {
+            opt.addEventListener('click', () => {
+                const fx = opt.getAttribute('data-fx');
+                activeFX[fx] = !activeFX[fx];
+                opt.classList.toggle('active', activeFX[fx]);
+                if (window.gameScene) window.gameScene.updateFX();
+            });
+        });
+
+        class TeapotScene extends Phaser.Scene {
+            constructor() {
+                super({ key: 'TeapotScene' });
+                this.ready = false;
+                window.gameScene = this;
+            }
+
+            create() {
+                try {
+                    this.vertices = teapotData.vertices;
+                    this.faces = teapotData.faces;
+
+                    // Calculate Vertex Normals (Shared for Gouraud/Phong)
+                    this.vertexNormals = new Array(this.vertices.length).fill(0).map(() => ({x:0, y:0, z:0}));
+                    this.faces.forEach(f => {
+                        const v1 = this.vertices[f[0]], v2 = this.vertices[f[1]], v3 = this.vertices[f[2]];
+                        const ux = v2[0]-v1[0], uy = v2[1]-v1[1], uz = v2[2]-v1[2];
+                        const vx = v3[0]-v1[0], vy = v3[1]-v1[1], vz = v3[2]-v1[2];
+                        let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+                        this.vertexNormals[f[0]].x += nx; this.vertexNormals[f[0]].y += ny; this.vertexNormals[f[0]].z += nz;
+                        this.vertexNormals[f[1]].x += nx; this.vertexNormals[f[1]].y += ny; this.vertexNormals[f[1]].z += nz;
+                        this.vertexNormals[f[2]].x += nx; this.vertexNormals[f[2]].y += ny; this.vertexNormals[f[2]].z += nz;
+                    });
+                    this.vertexNormals.forEach(n => {
+                        const len = Math.sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+                        if (len>0) { n.x/=len; n.y/=len; n.z/=len; }
+                    });
+
+                    this.graphics = this.add.graphics();
+                    this.fxGraphics = this.add.graphics().setDepth(1000);
+                    
+                    this.rotationY = 0;
+                    this.rotationX = -0.4;
+                    this.ready = true;
+                    statusEl.style.display = 'none';
+                } catch (e) {
+                    statusEl.innerText = "Error: " + e.message;
+                }
+            }
+
+            updateFX() {
+                const cam = this.cameras.main;
+                if (activeFX.bloom) {
+                    if (!this.bloomFX) this.bloomFX = cam.postFX.addBloom(0x00ff00, 1, 1, 2, 1.2);
+                } else {
+                    if (this.bloomFX) { cam.postFX.remove(this.bloomFX); this.bloomFX = null; }
+                }
+            }
+
+            update(time, delta) {
+                if (!this.ready) return;
+
+                this.graphics.clear();
+                this.fxGraphics.clear();
+                if (activeFX.scanlines) {
+                    this.fxGraphics.lineStyle(1, 0x000000, 0.4);
+                    for (let i = 0; i < 600; i += 3) this.fxGraphics.lineBetween(0, i, 800, i);
+                }
+
+                this.rotationY -= 0.9 * (delta / 1000);
+                const cosY = Math.cos(this.rotationY), sinY = Math.sin(this.rotationY);
+                const cosX = Math.cos(this.rotationX), sinX = Math.sin(this.rotationX);
+                const centerX = 400, centerY = 300, globalScale = 75, cameraZ = 10;
+
+                // 1. Process Vertices & Normals
+                const processedVerts = new Array(this.vertices.length);
+                const transformedNormals = new Array(this.vertices.length);
+
+                for (let i = 0; i < this.vertices.length; i++) {
+                    const v = this.vertices[i];
+                    const n = this.vertexNormals[i];
+                    
+                    const rx1 = v[0]*cosY - v[2]*sinY, rz1 = v[0]*sinY + v[2]*cosY;
+                    const ry2 = (v[1]-1.5)*cosX - rz1*sinX, rz2 = (v[1]-1.5)*sinX + rz1*cosX;
+                    processedVerts[i] = { rx: rx1, ry: ry2, rz: rz2 };
+
+                    const nx1 = n.x*cosY - n.z*sinY, nz1 = n.x*sinY + n.z*cosY;
+                    const ny3 = n.y*cosX - nz1*sinX, nz3 = n.y*sinX + nz1*cosX;
+                    transformedNormals[i] = { x: nx1, y: ny3, z: nz3 };
+
+                    const depth = rz2 + cameraZ;
+                    if (depth > 0.1) {
+                        const s = globalScale * (cameraZ / depth);
+                        processedVerts[i].x = centerX + rx1*s;
+                        processedVerts[i].y = centerY - ry2*s;
+                        processedVerts[i].z = rz2;
+                    } else {
+                        processedVerts[i] = null;
+                    }
+                }
+
+                if (currentRenderMode === 'points') {
+                    this.graphics.fillStyle(0x00ff00, 1);
+                    processedVerts.forEach(p => { if (p) this.graphics.fillRect(p.x, p.y, 2, 2); });
+                    return;
+                }
+
+                // 2. Light & Faces
+                const lightTime = time * 0.0015;
+                const lx = Math.sin(lightTime), ly = -0.5, lz = Math.cos(lightTime);
+                const lLen = Math.sqrt(lx*lx+ly*ly+lz*lz);
+                const lDir = {x:lx/lLen, y:ly/lLen, z:lz/lLen};
+
+                const facesToDraw = [];
+                for(let i=0; i<this.faces.length; i++) {
+                    const f = this.faces[i];
+                    const p1=processedVerts[f[0]], p2=processedVerts[f[1]], p3=processedVerts[f[2]];
+                    if(!p1||!p2||!p3) continue;
+                    
+                    const cp = (p2.x-p1.x)*(p3.y-p1.y)-(p2.y-p1.y)*(p3.x-p1.x);
+                    if(currentRenderMode!=='wireframe' && cp<0) continue;
+                    
+                    let color = 0x00ff00;
+                    if(['flat','gouraud','phong'].includes(currentRenderMode)) {
+                        let nx, ny, nz;
+                        
+                        if (currentRenderMode === 'flat') {
+                            // TRUE FLAT: Calculate Face Normal from the actual 3D positions of the rotated face
+                            const ux = p2.rx - p1.rx, uy = p2.ry - p1.ry, uz = p2.rz - p1.rz;
+                            const vx = p3.rx - p1.rx, vy = p3.ry - p1.ry, vz = p3.rz - p1.rz;
+                            nx = uy*vz - uz*vy; ny = uz*vx - ux*vz; nz = ux*vy - uy*vx;
+                            const nLen = Math.sqrt(nx*nx+ny*ny+nz*nz);
+                            if(nLen>0) { nx/=nLen; ny/=nLen; nz/=nLen; }
+                            
+                            const dot = Math.max(0, nx*-lDir.x + ny*-lDir.y + nz*-lDir.z);
+                            const val = Math.floor((0.15 + dot*0.85)*255);
+                            color = (val << 8);
+                        } else {
+                            // GOURAUD/PHONG: Use averaged vertex normals
+                            let avgInt = 0, avgSpec = 0;
+                            [f[0], f[1], f[2]].forEach(idx => {
+                                const n = transformedNormals[idx];
+                                const dot = Math.max(0, n.x*-lDir.x + n.y*-lDir.y + n.z*-lDir.z);
+                                avgInt += dot;
+                                if (currentRenderMode === 'phong') {
+                                    const hx = -lDir.x, hy = -lDir.y, hz = -lDir.z - 1;
+                                    const hLen = Math.sqrt(hx*hx + hy*hy + hz*hz);
+                                    const ndoth = Math.max(0, n.x*(hx/hLen) + n.y*(hy/hLen) + n.z*(hz/hLen));
+                                    avgSpec += Math.pow(ndoth, 30);
+                                }
+                            });
+                            const gVal = Math.floor((0.15 + (avgInt/3)*0.85)*255);
+                            const sVal = Math.floor((avgSpec/3)*255);
+                            color = (sVal << 16) | (Math.min(255, gVal + sVal) << 8) | sVal;
+                        }
+                    }
+                    facesToDraw.push({p1,p2,p3,avgZ:(p1.z+p2.z+p3.z)/3, color});
+                }
+                
+                facesToDraw.sort((a,b)=>b.avgZ-a.avgZ).forEach(f=>{
+                    if(currentRenderMode==='wireframe') {
+                        this.graphics.lineStyle(1,0x00ff00,0.4).strokePoints([f.p1,f.p2,f.p3], true);
+                    } else {
+                        const isHL = currentRenderMode==='hidden-line';
+                        this.graphics.fillStyle(isHL?0x000000:f.color, 1);
+                        this.graphics.lineStyle(1, isHL?0x00ff00:f.color, 1);
+                        this.graphics.fillPoints([f.p1,f.p2,f.p3], true);
+                        this.graphics.strokePoints([f.p1,f.p2,f.p3], true);
+                    }
+                });
+            }
+        }
+        new Phaser.Game({ type: Phaser.AUTO, width: 800, height: 600, backgroundColor: '#000', parent: 'game-container', scene: TeapotScene });
+    </script>
+</body>
+</html>

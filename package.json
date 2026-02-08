@@ -1,0 +1,26 @@
+{
+  "name": "phaser-wireframe-teapot",
+  "version": "1.0.0",
+  "description": "A rotating wireframe Utah Teapot using Phaser with hidden edges in green on a black background with retro feel",
+  "main": "index.js",
+  "scripts": {
+    "start": "npx http-server",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "phaser",
+    "wireframe",
+    "teapot",
+    "3d",
+    "retro"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
