@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phaser Utah Teapot - Pro Software</title>
+    <title>Phaser Utah Teapot - Raytracer</title>
     <style>
         body {
             margin: 0;
@@ -29,17 +29,6 @@
             position: relative;
         }
         
-        #status {
-            position: absolute;
-            color: #0f0;
-            font-size: 18px;
-            pointer-events: none;
-            text-align: center;
-            top: 20px;
-            z-index: 100;
-            width: 100%;
-        }
-
         #controls-sidebar {
             color: #0f0;
             text-align: left;
@@ -99,13 +88,13 @@
     </style>
 </head>
 <body>
-    <div id="status">Loading Teapot...</div>
+    <div id="status" style="position: absolute; color: #0f0; top: 20px;">Building BVH...</div>
     
     <div id="main-wrapper">
         <div id="game-container"></div>
 
         <div id="controls-sidebar">
-            <div class="section-title">Software Rendering</div>
+            <div class="section-title">Software Raster</div>
             <div class="control-option" data-mode="points">
                 <span class="bullet"></span> Points
             </div>
@@ -125,7 +114,12 @@
                 <span class="bullet"></span> Phong
             </div>
 
-            <div class="section-title">Retro FX</div>
+            <div class="section-title">Software Raytrace</div>
+            <div class="control-option" data-mode="raytrace">
+                <span class="bullet"></span> Ray Tracer (BVH)
+            </div>
+
+            <div class="section-title">FX</div>
             <div class="control-option" data-fx="bloom">
                 <span class="bullet"></span> Bloom
             </div>
@@ -159,6 +153,155 @@
             });
         });
 
+        // --- BVH & Raytracing Logic ---
+        class AABB {
+            constructor() {
+                this.min = {x: Infinity, y: Infinity, z: Infinity};
+                this.max = {x: -Infinity, y: -Infinity, z: -Infinity};
+            }
+            add(v) {
+                this.min.x = Math.min(this.min.x, v[0]);
+                this.min.y = Math.min(this.min.y, v[1]);
+                this.min.z = Math.min(this.min.z, v[2]);
+                this.max.x = Math.max(this.max.x, v[0]);
+                this.max.y = Math.max(this.max.y, v[1]);
+                this.max.z = Math.max(this.max.z, v[2]);
+            }
+            intersect(ray) {
+                let tmin = (this.min.x - ray.ox) * ray.idx;
+                let tmax = (this.max.x - ray.ox) * ray.idx;
+                if (tmin > tmax) [tmin, tmax] = [tmax, tmin];
+
+                let tymin = (this.min.y - ray.oy) * ray.idy;
+                let tymax = (this.max.y - ray.oy) * ray.idy;
+                if (tymin > tymax) [tymin, tymax] = [tymax, tymin];
+
+                if ((tmin > tymax) || (tymin > tmax)) return false;
+                if (tymin > tmin) tmin = tymin;
+                if (tymax < tmax) tmax = tymax;
+
+                let tzmin = (this.min.z - ray.oz) * ray.idz;
+                let tzmax = (this.max.z - ray.oz) * ray.idz;
+                if (tzmin > tzmax) [tzmin, tzmax] = [tzmax, tzmin];
+
+                if ((tmin > tzmax) || (tzmin > tmax)) return false;
+                return true;
+            }
+        }
+
+        class BVHNode {
+            constructor(tris) {
+                this.aabb = new AABB();
+                this.tris = tris;
+                this.left = null;
+                this.right = null;
+                
+                // Calc Bounds
+                for (let t of tris) {
+                    this.aabb.add(t.v0);
+                    this.aabb.add(t.v1);
+                    this.aabb.add(t.v2);
+                }
+
+                if (tris.length > 8) { // Split threshold
+                    const axis = (this.aabb.max.x - this.aabb.min.x > this.aabb.max.y - this.aabb.min.y) ? 
+                                 ((this.aabb.max.x - this.aabb.min.x > this.aabb.max.z - this.aabb.min.z) ? 0 : 2) : 
+                                 ((this.aabb.max.y - this.aabb.min.y > this.aabb.max.z - this.aabb.min.z) ? 1 : 2);
+                    
+                    tris.sort((a,b) => a.center[axis] - b.center[axis]);
+                    const mid = Math.floor(tris.length / 2);
+                    this.left = new BVHNode(tris.slice(0, mid));
+                    this.right = new BVHNode(tris.slice(mid));
+                    this.tris = null; // Leaf only
+                }
+            }
+        }
+
+        class Raytracer {
+            constructor(vertices, faces) {
+                this.triangles = [];
+                // Pre-process triangles for BVH
+                // v0, v1, v2 are [x,y,z] arrays
+                faces.forEach(f => {
+                    const v0 = vertices[f[0]];
+                    const v1 = vertices[f[1]];
+                    const v2 = vertices[f[2]];
+                    // Shift Y to center
+                    const tv0 = [v0[0], v0[1]-1.5, v0[2]];
+                    const tv1 = [v1[0], v1[1]-1.5, v1[2]];
+                    const tv2 = [v2[0], v2[1]-1.5, v2[2]];
+                    
+                    const center = [
+                        (tv0[0]+tv1[0]+tv2[0])/3,
+                        (tv0[1]+tv1[1]+tv2[1])/3,
+                        (tv0[2]+tv1[2]+tv2[2])/3
+                    ];
+                    
+                    // Face Normal
+                    const ux = tv1[0]-tv0[0], uy = tv1[1]-tv0[1], uz = tv1[2]-tv0[2];
+                    const vx = tv2[0]-tv0[0], vy = tv2[1]-tv0[1], vz = tv2[2]-tv0[2];
+                    let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+                    const len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+                    const n = len>0 ? {x:nx/len, y:ny/len, z:nz/len} : {x:0,y:1,z:0};
+
+                    this.triangles.push({v0:tv0, v1:tv1, v2:tv2, center, normal:n});
+                });
+                
+                console.log("Building BVH for " + this.triangles.length + " triangles...");
+                this.root = new BVHNode(this.triangles);
+                console.log("BVH Built.");
+            }
+
+            intersect(ray, node) {
+                if (!node.aabb.intersect(ray)) return null;
+                
+                let minHit = null;
+
+                if (node.tris) {
+                    // Leaf
+                    for (let t of node.tris) {
+                        // Moller-Trumbore
+                        const v0 = t.v0, v1 = t.v1, v2 = t.v2;
+                        const edge1x = v1[0] - v0[0], edge1y = v1[1] - v0[1], edge1z = v1[2] - v0[2];
+                        const edge2x = v2[0] - v0[0], edge2y = v2[1] - v0[1], edge2z = v2[2] - v0[2];
+                        
+                        const hx = ray.dy * edge2z - ray.dz * edge2y;
+                        const hy = ray.dz * edge2x - ray.dx * edge2z;
+                        const hz = ray.dx * edge2y - ray.dy * edge2x;
+                        
+                        const a = edge1x * hx + edge1y * hy + edge1z * hz;
+                        if (a > -0.00001 && a < 0.00001) continue;
+                        
+                        const f = 1.0 / a;
+                        const sx = ray.ox - v0[0], sy = ray.oy - v0[1], sz = ray.oz - v0[2];
+                        const u = f * (sx * hx + sy * hy + sz * hz);
+                        if (u < 0.0 || u > 1.0) continue;
+                        
+                        const qx = sy * edge1z - sz * edge1y;
+                        const qy = sz * edge1x - sx * edge1z;
+                        const qz = sx * edge1y - sy * edge1x;
+                        const v = f * (ray.dx * qx + ray.dy * qy + ray.dz * qz);
+                        if (v < 0.0 || u + v > 1.0) continue;
+                        
+                        const tt = f * (edge2x * qx + edge2y * qy + edge2z * qz);
+                        if (tt > 0.001) { // Epsilon for self-intersection
+                            if (!minHit || tt < minHit.t) {
+                                minHit = { t: tt, tri: t };
+                            }
+                        }
+                    }
+                } else {
+                    // Branch
+                    const hitL = this.intersect(ray, node.left);
+                    const hitR = this.intersect(ray, node.right);
+                    if (hitL && hitR) return hitL.t < hitR.t ? hitL : hitR;
+                    if (hitL) return hitL;
+                    if (hitR) return hitR;
+                }
+                return minHit;
+            }
+        }
+
         class TeapotScene extends Phaser.Scene {
             constructor() {
                 super({ key: 'TeapotScene' });
@@ -171,7 +314,7 @@
                     this.vertices = teapotData.vertices;
                     this.faces = teapotData.faces;
 
-                    // Calculate Vertex Normals (Shared for Gouraud/Phong)
+                    // Calc Vertex Normals for Software Raster modes
                     this.vertexNormals = new Array(this.vertices.length).fill(0).map(() => ({x:0, y:0, z:0}));
                     this.faces.forEach(f => {
                         const v1 = this.vertices[f[0]], v2 = this.vertices[f[1]], v3 = this.vertices[f[2]];
@@ -190,6 +333,11 @@
                     this.graphics = this.add.graphics();
                     this.fxGraphics = this.add.graphics().setDepth(1000);
                     
+                    // Init Raytracer
+                    this.raytracer = new Raytracer(this.vertices, this.faces);
+                    this.rtTexture = this.textures.createCanvas('rt_out', 200, 150);
+                    this.rtImage = this.add.image(400, 300, 'rt_out').setScale(4).setVisible(false);
+
                     this.rotationY = 0;
                     this.rotationX = -0.4;
                     this.ready = true;
@@ -219,11 +367,161 @@
                 }
 
                 this.rotationY -= 0.9 * (delta / 1000);
+
+                if (currentRenderMode === 'raytrace') {
+                    this.rtImage.setVisible(true);
+                    this.graphics.setVisible(false);
+                    this.renderRaytrace(time);
+                } else {
+                    this.rtImage.setVisible(false);
+                    this.graphics.setVisible(true);
+                    this.renderRaster(time);
+                }
+            }
+
+            renderRaytrace(time) {
+                const ctx = this.rtTexture.context;
+                const width = 200;
+                const height = 150;
+                const id = ctx.createImageData(width, height);
+                const data = id.data;
+
+                // Rotate Camera & Light (Instead of Object)
+                // Object is static at Identity.
+                // Rotation Y = this.rotationY
+                // Inverse Rotation Y = -this.rotationY
+                // We keep X rotation fixed at -0.4 for simplicity or inverse that too.
+                
+                const rY = -this.rotationY;
+                const rX = -this.rotationX; 
+                
+                // Basic Camera Rotation Logic
+                const cosY = Math.cos(rY), sinY = Math.sin(rY);
+                const cosX = Math.cos(rX), sinX = Math.sin(rX);
+                
+                // Light Pos (World)
+                const lTime = time * 0.0015;
+                let lx = Math.sin(lTime) * 10;
+                let ly = -5;
+                let lz = Math.cos(lTime) * 10;
+                
+                // Transform Light to Local Space (Rotate by rY, rX)
+                // 1. Rotate Y
+                let lx1 = lx * cosY - lz * sinY;
+                let lz1 = lx * sinY + lz * cosY;
+                // 2. Rotate X
+                let ly2 = ly * cosX - lz1 * sinX;
+                let lz2 = ly * sinX + lz1 * cosX;
+                const localLightPos = {x:lx1, y:ly2, z:lz2};
+
+                // Camera at 0,0,-10 world.
+                // Transform Camera to Local
+                let cx = 0, cy = 0, cz = -10;
+                // Rot Y
+                let cx1 = cx * cosY - cz * sinY;
+                let cz1 = cx * sinY + cz * cosY;
+                // Rot X
+                let cy2 = cy * cosX - cz1 * sinX;
+                let cz2 = cy * sinX + cz1 * cosX;
+                const localCamPos = {x:cx1, y:cy2, z:cz2};
+
+                // For every pixel
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const idx = (y * width + x) * 4;
+                        
+                        // Screen space -1 to 1
+                        const u = (x / width) * 2 - 1;
+                        const v = -((y / height) * 2 - 1) * (height/width); // Aspect ratio
+                        
+                        // Ray Dir (View Space)
+                        let dx = u, dy = v, dz = 1; // Looking +Z in standard raytracing, but our cam is at -10 looking at 0.
+                        // So dir is (u, v, 1) if cam is 0,0,-10?
+                        // Let's assume standard perspective
+                        // Normalize
+                        const len = Math.sqrt(dx*dx+dy*dy+dz*dz);
+                        dx/=len; dy/=len; dz/=len;
+
+                        // Rotate Ray Dir to Local Space
+                        let rdx1 = dx * cosY - dz * sinY;
+                        let rdz1 = dx * sinY + dz * cosY;
+                        let rdy2 = dy * cosX - rdz1 * sinX;
+                        let rdz2 = dy * sinX + rdz1 * cosX;
+                        
+                        const ray = {
+                            ox: localCamPos.x, oy: localCamPos.y, oz: localCamPos.z,
+                            dx: rdx1, dy: rdy2, dz: rdz2,
+                            idx: 1/rdx1, idy: 1/rdy2, idz: 1/rdz2
+                        };
+
+                        const hit = this.raytracer.intersect(ray, this.raytracer.root);
+                        
+                        if (hit) {
+                            // Shading
+                            const hitX = ray.ox + ray.dx * hit.t;
+                            const hitY = ray.oy + ray.dy * hit.t;
+                            const hitZ = ray.oz + ray.dz * hit.t;
+                            
+                            // Light Vector (Hit -> Light)
+                            const lVecX = localLightPos.x - hitX;
+                            const lVecY = localLightPos.y - hitY;
+                            const lVecZ = localLightPos.z - hitZ;
+                            const lDist = Math.sqrt(lVecX*lVecX+lVecY*lVecY+lVecZ*lVecZ);
+                            const lDirX = lVecX/lDist, lDirY = lVecY/lDist, lDirZ = lVecZ/lDist;
+                            
+                            // Shadow Ray
+                            const shadowRay = {
+                                ox: hitX + lDirX*0.01, oy: hitY + lDirY*0.01, oz: hitZ + lDirZ*0.01,
+                                dx: lDirX, dy: lDirY, dz: lDirZ,
+                                idx: 1/lDirX, idy: 1/lDirY, idz: 1/lDirZ
+                            };
+                            
+                            // Fast check: does shadow ray hit anything closer than the light?
+                            const shadowHit = this.raytracer.intersect(shadowRay, this.raytracer.root);
+                            const inShadow = (shadowHit && shadowHit.t < lDist);
+                            
+                            if (inShadow) {
+                                // Ambient only
+                                data[idx] = 0; data[idx+1] = 20; data[idx+2] = 0;
+                            } else {
+                                // Phong
+                                const n = hit.tri.normal;
+                                const dot = Math.max(0, n.x*lDirX + n.y*lDirY + n.z*lDirZ);
+                                
+                                // Specular
+                                // View Dir (Hit -> Cam)
+                                const vDirX = localCamPos.x - hitX;
+                                const vDirY = localCamPos.y - hitY;
+                                const vDirZ = localCamPos.z - hitZ;
+                                const vLen = Math.sqrt(vDirX*vDirX+vDirY*vDirY+vDirZ*vDirZ);
+                                const vx = vDirX/vLen, vy = vDirY/vLen, vz = vDirZ/vLen;
+                                
+                                // Half vector
+                                const hx = lDirX+vx, hy = lDirY+vy, hz = lDirZ+vz;
+                                const hLen = Math.sqrt(hx*hx+hy*hy+hz*hz);
+                                const nh = Math.max(0, n.x*(hx/hLen) + n.y*(hy/hLen) + n.z*(hz/hLen));
+                                const spec = Math.pow(nh, 30) * 0.8;
+                                
+                                const val = 0.1 + dot * 0.9;
+                                data[idx] = Math.min(255, spec*255);
+                                data[idx+1] = Math.min(255, val*255 + spec*255);
+                                data[idx+2] = Math.min(255, spec*255);
+                            }
+                            data[idx+3] = 255;
+                        } else {
+                            data[idx+3] = 0; // Transparent BG
+                        }
+                    }
+                }
+                
+                this.rtTexture.refresh();
+            }
+
+            renderRaster(time) {
                 const cosY = Math.cos(this.rotationY), sinY = Math.sin(this.rotationY);
                 const cosX = Math.cos(this.rotationX), sinX = Math.sin(this.rotationX);
                 const centerX = 400, centerY = 300, globalScale = 75, cameraZ = 10;
 
-                // 1. Process Vertices & Normals
                 const processedVerts = new Array(this.vertices.length);
                 const transformedNormals = new Array(this.vertices.length);
 
@@ -256,38 +554,31 @@
                     return;
                 }
 
-                // 2. Light & Faces
+                const facesToDraw = [];
                 const lightTime = time * 0.0015;
                 const lx = Math.sin(lightTime), ly = -0.5, lz = Math.cos(lightTime);
                 const lLen = Math.sqrt(lx*lx+ly*ly+lz*lz);
                 const lDir = {x:lx/lLen, y:ly/lLen, z:lz/lLen};
 
-                const facesToDraw = [];
                 for(let i=0; i<this.faces.length; i++) {
                     const f = this.faces[i];
                     const p1=processedVerts[f[0]], p2=processedVerts[f[1]], p3=processedVerts[f[2]];
                     if(!p1||!p2||!p3) continue;
-                    
                     const cp = (p2.x-p1.x)*(p3.y-p1.y)-(p2.y-p1.y)*(p3.x-p1.x);
                     if(currentRenderMode!=='wireframe' && cp<0) continue;
                     
                     let color = 0x00ff00;
                     if(['flat','gouraud','phong'].includes(currentRenderMode)) {
-                        let nx, ny, nz;
-                        
                         if (currentRenderMode === 'flat') {
-                            // TRUE FLAT: Calculate Face Normal from the actual 3D positions of the rotated face
                             const ux = p2.rx - p1.rx, uy = p2.ry - p1.ry, uz = p2.rz - p1.rz;
                             const vx = p3.rx - p1.rx, vy = p3.ry - p1.ry, vz = p3.rz - p1.rz;
-                            nx = uy*vz - uz*vy; ny = uz*vx - ux*vz; nz = ux*vy - uy*vx;
+                            let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
                             const nLen = Math.sqrt(nx*nx+ny*ny+nz*nz);
                             if(nLen>0) { nx/=nLen; ny/=nLen; nz/=nLen; }
-                            
                             const dot = Math.max(0, nx*-lDir.x + ny*-lDir.y + nz*-lDir.z);
                             const val = Math.floor((0.15 + dot*0.85)*255);
                             color = (val << 8);
                         } else {
-                            // GOURAUD/PHONG: Use averaged vertex normals
                             let avgInt = 0, avgSpec = 0;
                             [f[0], f[1], f[2]].forEach(idx => {
                                 const n = transformedNormals[idx];
@@ -321,6 +612,7 @@
                 });
             }
         }
+        
         new Phaser.Game({ type: Phaser.AUTO, width: 800, height: 600, backgroundColor: '#000', parent: 'game-container', scene: TeapotScene });
     </script>
 </body>
